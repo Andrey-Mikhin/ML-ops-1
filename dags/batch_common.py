@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -8,6 +9,8 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 FEATURES = ["age", "tenure_months", "monthly_spend", "support_tickets_30d"]
 LIMITS = [(18, 100), (0, 240), (0, 10000), (0, 100)]
@@ -51,9 +54,48 @@ def business_date(explicit, interval_start):
         raise ValueError("business_date is required without a data interval")
     return interval_start.in_timezone("Europe/Moscow").to_date_string()
 
-
 def validate_rows(rows, day):
-    raise NotImplementedError("Задание 2: validate_rows")
+    if not rows:
+        raise ValueError("Empty rows")
+
+    seen = set()
+    required = [
+        "customer_id",
+        "business_date",
+        "age",
+        "tenure_months",
+        "monthly_spend",
+        "support_tickets_30d",
+    ]
+
+    for row in rows:
+        for key in required:
+            if key not in row:
+                raise KeyError(f"Missing key: {key}")
+
+        cid = row["customer_id"]
+        if not isinstance(cid, str) or not cid:
+            raise ValueError(f"Invalid customer_id: {cid!r}")
+        if cid in seen:
+            raise ValueError(f"Duplicate customer_id: {cid}")
+        seen.add(cid)
+
+        if row["business_date"] != day:
+            raise ValueError(
+                f"business_date mismatch: {row['business_date']} != {day}"
+            )
+
+        for name, (lo, hi) in zip(FEATURES, LIMITS):
+            value = row[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"Invalid {name}: {value!r}")
+            if not math.isfinite(value):
+                raise ValueError(f"Non-finite {name}: {value!r}")
+            if not (lo <= value <= hi):
+                raise ValueError(f"{name} out of range: {value!r}")
+
+    return rows
+
 
 
 def validate_model(model):
@@ -79,12 +121,86 @@ def predict(rows, model):
 
 
 def infer_batches(rows, model, batch_size):
-    raise NotImplementedError("Задание 3: infer_batches")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise ValueError(f"Invalid batch_size: {batch_size!r}")
+    if not (1 <= batch_size <= 1000):
+        raise ValueError(f"Invalid batch_size: {batch_size!r}")
+
+    predictions = []
+    batch_index = 0
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        batch_index += 1
+        logger.info("Batch %d size %d", batch_index, len(batch))
+        predictions.extend(predict(batch, model))
+
+    return predictions
 
 
 def validate_predictions(predictions, expected_ids):
-    raise NotImplementedError("Задание 4: validate_predictions")
+    if len(predictions) != len(expected_ids):
+        raise ValueError(
+            f"Predictions count mismatch: {len(predictions)} != {len(expected_ids)}"
+        )
+
+    pred_ids = [p["customer_id"] for p in predictions]
+    if len(pred_ids) != len(set(pred_ids)):
+        raise ValueError("Duplicate customer_id in predictions")
+    if set(pred_ids) != set(expected_ids):
+        raise ValueError("customer_id set mismatch")
+
+    for prediction in predictions:
+        cid = prediction["customer_id"]
+        score = prediction["score"]
+        label = prediction["label"]
+
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError(f"Invalid score for {cid}: {score!r}")
+        if not math.isfinite(score):
+            raise ValueError(f"Non-finite score for {cid}: {score!r}")
+        if not (0 <= score <= 1):
+            raise ValueError(f"Score out of range for {cid}: {score!r}")
+
+        if isinstance(label, bool) or not isinstance(label, int):
+            raise ValueError(f"Invalid label for {cid}: {label!r}")
+        if label not in (0, 1):
+            raise ValueError(f"Label out of range for {cid}: {label!r}")
+        if label != int(score >= 0.5):
+            raise ValueError(
+                f"Label mismatch for {cid}: score={score}, label={label}"
+            )
 
 
 def replace_day(conn, day, model_version, predictions):
-    raise NotImplementedError("Задание 5: replace_day")
+    if not predictions:
+        raise ValueError("Empty predictions")
+
+    with conn.transaction():
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"{day}:{model_version}",),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM predictions
+            WHERE business_date = %s AND model_version = %s
+            """,
+            (day, model_version),
+        )
+
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO predictions
+                    (business_date, model_version, customer_id, score, label)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [
+                    (day, model_version, p["customer_id"], p["score"], p["label"])
+                    for p in predictions
+                ],
+            )
+
+
+
