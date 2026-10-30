@@ -65,8 +65,7 @@ def validate_rows(rows, day):
         "age",
         "tenure_months",
         "monthly_spend",
-        "support_tickets_30d",
-    ]
+        "support_tickets_30d",]
 
     for row in rows:
         for key in required:
@@ -82,8 +81,7 @@ def validate_rows(rows, day):
 
         if row["business_date"] != day:
             raise ValueError(
-                f"business_date mismatch: {row['business_date']} != {day}"
-            )
+                f"business_date mismatch: {row['business_date']} != {day}")
 
         for name, (lo, hi) in zip(FEATURES, LIMITS):
             value = row[name]
@@ -167,8 +165,7 @@ def validate_predictions(predictions, expected_ids):
             raise ValueError(f"Label out of range for {cid}: {label!r}")
         if label != int(score >= 0.5):
             raise ValueError(
-                f"Label mismatch for {cid}: score={score}, label={label}"
-            )
+                f"Label mismatch for {cid}: score={score}, label={label}")
 
 
 def replace_day(conn, day, model_version, predictions):
@@ -178,16 +175,14 @@ def replace_day(conn, day, model_version, predictions):
     with conn.transaction():
         conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-            (f"{day}:{model_version}",),
-        )
+            (f"{day}:{model_version}",),)
 
         conn.execute(
             """
             DELETE FROM predictions
             WHERE business_date = %s AND model_version = %s
             """,
-            (day, model_version),
-        )
+            (day, model_version),)
 
         with conn.cursor() as cur:
             cur.executemany(
@@ -198,9 +193,7 @@ def replace_day(conn, day, model_version, predictions):
                 """,
                 [
                     (day, model_version, p["customer_id"], p["score"], p["label"])
-                    for p in predictions
-                ],
-            )
+                    for p in predictions],)
 
 
 
